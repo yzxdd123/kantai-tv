@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>看台 · 直播源管理</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1b1f24; --muted:#6a737d; --line:#e3e6ea; --accent:#1f6feb; --danger:#d1242f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1116; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --line:#30363d; --accent:#4c8dff; --danger:#ff6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:8px 0 16px; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-size:14px; color:var(--muted); margin:10px 0 4px; }
+  input { width:100%; font-size:16px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  button { font-size:15px; padding:10px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--danger); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .src { border-top:1px solid var(--line); padding:12px 0; }
+  .src:first-child { border-top:0; padding-top:0; }
+  .src b { display:block; }
+  .url { font-size:13px; color:var(--muted); word-break:break-all; }
+  .muted { color:var(--muted); font-size:14px; }
+  #msg { min-height:20px; font-size:14px; margin:-6px 0 12px; }
+  #msg.err { color:var(--danger); }
+  .pin { font-size:28px; letter-spacing:8px; text-align:center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>看台 · 直播源管理</h1>
+  <div id="msg"></div>
+
+  <section id="pairCard" class="card" hidden>
+    <h2>配对这台手机</h2>
+    <p class="muted">输入电视「管理直播源」页面上显示的 4 位配对码。配对一次后，这台手机以后不用再输。</p>
+    <input id="pin" class="pin" inputmode="numeric" maxlength="4" autocomplete="off">
+    <div class="row"><button class="primary" onclick="pair()">配对</button></div>
+  </section>
+
+  <div id="app" hidden>
+    <section class="card">
+      <h2 id="formTitle">添加直播源</h2>
+      <label for="url">直播源地址（M3U / TXT）</label>
+      <input id="url" type="url" placeholder="https://…/xxx.m3u" autocomplete="off">
+      <label for="name">名字（可不填）</label>
+      <input id="name" autocomplete="off">
+      <label for="epg">节目单地址（可不填，默认用源里自带的）</label>
+      <input id="epg" type="url" placeholder="https://…/epg.xml.gz" autocomplete="off">
+      <div class="row">
+        <button class="primary" id="saveBtn" onclick="save()">添加</button>
+        <button id="cancelBtn" onclick="resetForm()" hidden>取消修改</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>已添加的直播源</h2>
+      <div id="sources" class="muted">加载中…</div>
+      <p id="status" class="muted"></p>
+      <div class="row"><button onclick="refreshAll()">立即刷新全部</button></div>
+    </section>
+
+    <section class="card">
+      <h2>推送到电视播放</h2>
+      <p class="muted">粘贴一个直播或视频地址，电视会立刻打开播放。</p>
+      <input id="playUrl" type="url" placeholder="http://…/index.m3u8" autocomplete="off">
+      <div class="row"><button class="primary" onclick="push()">在电视上播放</button></div>
+    </section>
+  </div>
+</main>
+<script>
+  let token = null;
+  try { token = localStorage.getItem('kantai-token'); } catch (e) {}
+  let editing = null;
+  let sources = [];
+  const $ = id => document.getElementById(id);
+
+  function show(text, isErr) { const m = $('msg'); m.textContent = text || ''; m.className = isErr ? 'err' : ''; }
+
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Token': token || '' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && path !== '/api/pair') { token = null; view(); throw new Error(data.error || '请先配对'); }
+    if (!res.ok) throw new Error(data.error || ('出错了：' + res.status));
+    return data;
+  }
+
+  function view() {
+    $('pairCard').hidden = !!token;
+    $('app').hidden = !token;
+    if (token) load();
+  }
+
+  async function pair() {
+    try {
+      const r = await api('/api/pair', { pin: $('pin').value.trim() });
+      token = r.token;
+      try { localStorage.setItem('kantai-token', token); } catch (e) {}
+      show('配对成功');
+      view();
+    } catch (e) { show(e.message, true); }
+  }
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])); }
+
+  async function load() {
+    try {
+      const r = await api('/api/status');
+      sources = r.sources;
+      $('sources').innerHTML = sources.length ? sources.map(s => `
+        <div class="src">
+          <b>${esc(s.name)}</b>
+          <div class="url">${esc(s.url)}</div>
+          ${s.epgUrl ? `<div class="url">节目单：${esc(s.epgUrl)}</div>` : ''}
+          <div class="muted">${s.channels} 个频道</div>
+          <div class="row">
+            <button onclick="edit('${s.id}')">修改</button>
+            <button class="danger" onclick="del('${s.id}')">删除</button>
+          </div>
+        </div>`).join('') : '还没有直播源，在上面粘贴地址添加。';
+      $('status').textContent = (r.loading ? '电视正在更新… ' : '') + (r.status || '');
+      if (r.loading) setTimeout(load, 2000);
+    } catch (e) { show(e.message, true); }
+  }
+
+  function edit(id) {
+    const s = sources.find(x => x.id === id);
+    if (!s) return;
+    editing = id;
+    $('url').value = s.url; $('name').value = s.name; $('epg').value = s.epgUrl || '';
+    $('formTitle').textContent = '修改直播源'; $('saveBtn').textContent = '保存修改'; $('cancelBtn').hidden = false;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function resetForm() {
+    editing = null;
+    $('url').value = ''; $('name').value = ''; $('epg').value = '';
+    $('formTitle').textContent = '添加直播源'; $('saveBtn').textContent = '添加'; $('cancelBtn').hidden = true;
+  }
+
+  async function save() {
+    const body = { url: $('url').value.trim(), name: $('name').value.trim(), epgUrl: $('epg').value.trim() };
+    if (!body.url) { show('请先粘贴直播源地址', true); return; }
+    try {
+      if (editing) await api('/api/sources/update', { id: editing, ...body });
+      else await api('/api/sources/add', body);
+      show(editing ? '已保存，电视正在更新' : '已添加，电视正在下载频道');
+      resetForm();
+      setTimeout(load, 500);
+    } catch (e) { show(e.message, true); }
+  }
+
+  async function del(id) {
+    const s = sources.find(x => x.id === id);
+    if (!confirm(`删除「${s ? s.name : ''}」？`)) return;
+    try { await api('/api/sources/delete', { id }); show('已删除'); setTimeout(load, 500); }
+    catch (e) { show(e.message, true); }
+  }
+
+  async function refreshAll() {
+    try { await api('/api/refresh', {}); show('电视正在刷新'); setTimeout(load, 500); }
+    catch (e) { show(e.message, true); }
+  }
+
+  async function push() {
+    const url = $('playUrl').value.trim();
+    if (!url) { show('请先粘贴地址', true); return; }
+    try { await api('/api/play', { url }); show('已发送到电视'); }
+    catch (e) { show(e.message, true); }
+  }
+
+  view();
+</script>
+</body>
+</html>
