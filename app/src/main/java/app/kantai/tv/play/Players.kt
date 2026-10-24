@@ -1,6 +1,9 @@
 package app.kantai.tv.play
 
 import android.content.Context
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -13,7 +16,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import app.kantai.tv.data.Http
 
+@OptIn(UnstableApi::class)
 object Players {
+    private lateinit var hls: HlsMediaSource.Factory
+
     fun create(ctx: Context): ExoPlayer {
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(Http.UA)
@@ -24,8 +30,10 @@ object Players {
         val load = DefaultLoadControl.Builder()
             .setBufferDurationsMs(30_000, 90_000, 2_500, 5_000)
             .build()
+        val data = DefaultDataSource.Factory(ctx, http)
+        hls = HlsMediaSource.Factory(data).setExtractorFactory(HevcSafeHlsExtractorFactory())
         return ExoPlayer.Builder(ctx)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(ctx).setDataSourceFactory(DefaultDataSource.Factory(ctx, http)))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(ctx).setDataSourceFactory(data))
             .setLoadControl(load)
             .build()
             .also { PlayerStats.attach(it) }
@@ -57,9 +65,10 @@ object Players {
             player.playWhenReady = true
             return
         }
-        val item = MediaItem.Builder().setUri(url)
-        if (url.substringBefore('?').endsWith(".m3u8") || url.contains("m3u8?")) item.setMimeType(MimeTypes.APPLICATION_M3U8)
-        player.setMediaItem(item.build())
+        val isHls = url.substringBefore('?').endsWith(".m3u8") || url.contains("m3u8?")
+        val item = MediaItem.Builder().setUri(url).apply { if (isHls) setMimeType(MimeTypes.APPLICATION_M3U8) }.build()
+        // HLS 用自己的解析器工厂，绕开 H.265 分片末尾带填充数据时的 Media3 bug
+        if (isHls) player.setMediaSource(hls.createMediaSource(item)) else player.setMediaItem(item)
         player.prepare()
         player.playWhenReady = true
     }

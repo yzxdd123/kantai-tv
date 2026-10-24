@@ -74,6 +74,7 @@ fun PlayerScreen(
     var osdUntil by remember { mutableLongStateOf(0L) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var attempt by remember(req) { mutableIntStateOf(0) }
+    var resumeAt by remember(req) { mutableLongStateOf(0L) }
     var showStats by remember { mutableStateOf(false) }
     var okLongPressed by remember { mutableStateOf(false) }
     var okDown by remember { mutableStateOf(false) }
@@ -89,6 +90,8 @@ fun PlayerScreen(
             return@LaunchedEffect
         }
         Players.play(player, url, force = attempt > 0)
+        // 回看重试时从出错的位置接着放，而不是从头开始
+        if (attempt > 0 && prog != null && resumeAt > 0) player.seekTo(resumeAt)
         osd()
     }
 
@@ -99,6 +102,7 @@ fun PlayerScreen(
             }
 
             override fun onPlayerError(e: PlaybackException) {
+                resumeAt = player.currentPosition
                 error = "无法播放：${Players.describe(e)}"
             }
         }
@@ -106,9 +110,9 @@ fun PlayerScreen(
         onDispose { player.removeListener(l) }
     }
 
-    // 直播出错自动重连几次
+    // 出错自动重连几次（回看会从出错位置接着放）
     LaunchedEffect(error) {
-        if (error != null && prog == null && attempt < 3) {
+        if (error != null && attempt < 3) {
             delay(3_000)
             attempt++
         }

@@ -13,7 +13,8 @@ import java.util.concurrent.ConcurrentHashMap
  * 咪咕 CDN 回看。
  *
  * 直播列表只给最近几段，但 CDN 仍保留历史分片，文件名形如
- * `..._20261024_193000_1.ts`：日期、10 分钟时段（北京时间）、段号 1..60，每段 10 秒。
+ * `..._20261024_193000_1.ts`：日期、10 分钟时段（北京时间）、段号从 1 开始。
+ * 每段时长因频道而异（多数 10 秒，一个时段 60 段；咪咕直播 4K-1 是 6 秒，100 段），从直播列表的 #EXTINF 读取。
  * 先请求一次直播地址拿到当前鉴权，再把文件名里的时间换掉，就能拼出点播列表。
  * 列表和分片由本机 [WebServer] 提供，分片请求 302 到 CDN，视频不经过本机转发。
  */
@@ -25,6 +26,7 @@ object MiguReplay {
 
     private val lives = ConcurrentHashMap<String, String>()
     private val templates = ConcurrentHashMap<String, Pair<String, Long>>()
+    private val segSeconds = ConcurrentHashMap<String, Int>()
 
     fun isMigu(url: String): Boolean =
         runCatching { URL(url).host.endsWith("cmvideo.cn") }.getOrDefault(false) && url.contains("livemode=1")
@@ -39,16 +41,23 @@ object MiguReplay {
     }
 
     fun playlist(id: String, startSec: Long, endSec: Long): String? {
-        if (!lives.containsKey(id) || endSec <= startSec) return null
-        val sb = StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n")
-        var t = startSec / 10 * 10
+        val live = lives[id] ?: return null
+        template(id, live) // 顺便读出这个频道的分片时长
+        return playlist(id, startSec, endSec, segSeconds[id] ?: 10)
+    }
+
+    /** 每段 [seg] 秒，一个 10 分钟时段里段号 1..600/seg */
+    fun playlist(id: String, startSec: Long, endSec: Long, seg: Int): String? {
+        if (endSec <= startSec) return null
+        val sb = StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:$seg\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n")
+        var t = startSec / seg * seg
         while (t < endSec) {
             val z = Instant.ofEpochSecond(t).atZone(BJ)
             val bucket = z.minute / 10 * 10
-            val n = ((z.minute - bucket) * 60 + z.second) / 10 + 1
-            sb.append("#EXTINF:10.0,\n")
+            val n = ((z.minute - bucket) * 60 + z.second) / seg + 1
+            sb.append("#EXTINF:$seg.0,\n")
                 .append("/replay/migu/seg/$id/%04d%02d%02d/%02d%02d00/$n.ts\n".format(z.year, z.monthValue, z.dayOfMonth, z.hour, bucket))
-            t += 10
+            t += seg
         }
         return sb.append("#EXT-X-ENDLIST\n").toString()
     }
@@ -69,6 +78,11 @@ object MiguReplay {
             val seg = body.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() && !it.startsWith("#") }
                 ?: throw IOException("直播列表为空")
             val abs = URL(URL(finalUrl), seg).toString()
+            // 分片时长必须能整除 10 分钟，否则按 10 秒处理
+            body.lineSequence().lastOrNull { it.startsWith("#EXTINF:") }
+                ?.substringAfter(':')?.substringBefore(',')?.toDoubleOrNull()?.let { Math.round(it).toInt() }
+                ?.takeIf { it in 1..60 && 600 % it == 0 }
+                ?.let { segSeconds[id] = it }
             templates[id] = abs to System.currentTimeMillis()
             return abs
         }

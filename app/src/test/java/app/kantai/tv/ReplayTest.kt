@@ -61,12 +61,20 @@ class ReplayTest {
         val stop = LocalDateTime.of(2026, 10, 24, 21, 40).atZone(bj).toInstant().toEpochMilli()
         val url = MiguReplay.playlistUrl("http://x.cmvideo.cn/index.m3u8?livemode=1", start, stop)
         val id = url.substringAfter("/replay/migu/").substringBefore(".m3u8")
-        val segs = MiguReplay.playlist(id, start / 1000, stop / 1000)!!.lines().filter { it.startsWith("/replay/") }
+        val segs = MiguReplay.playlist(id, start / 1000, stop / 1000, 10)!!.lines().filter { it.startsWith("/replay/") }
         // 19:00:00 起每 10 秒一段，到 21:40 共 960 段；10 分钟一个时段，段号 1..60
         assertEquals(960, segs.size)
         assertEquals("/replay/migu/seg/$id/20261024/190000/1.ts", segs.first())
         assertEquals("/replay/migu/seg/$id/20261024/191000/1.ts", segs[60])
         assertEquals("/replay/migu/seg/$id/20261024/213000/60.ts", segs.last())
+
+        // 4K-1 这类 6 秒一段的频道：一个时段 100 段，时长标注也要是 6 秒
+        val six = MiguReplay.playlist(id, start / 1000, stop / 1000, 6)!!
+        val segs6 = six.lines().filter { it.startsWith("/replay/") }
+        assertEquals(1600, segs6.size)
+        assertEquals("/replay/migu/seg/$id/20261024/190000/100.ts", segs6[99])
+        assertEquals("/replay/migu/seg/$id/20261024/191000/1.ts", segs6[100])
+        assertTrue(six.contains("#EXT-X-TARGETDURATION:6\n") && six.contains("#EXTINF:6.0,"))
     }
 
     @Test
