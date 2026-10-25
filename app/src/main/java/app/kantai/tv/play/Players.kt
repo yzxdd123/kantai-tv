@@ -1,6 +1,8 @@
 package app.kantai.tv.play
 
 import android.content.Context
+import android.content.SharedPreferences
+import androidx.media3.common.C
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -32,11 +34,49 @@ object Players {
             .build()
         val data = DefaultDataSource.Factory(ctx, http)
         hls = HlsMediaSource.Factory(data).setExtractorFactory(HevcSafeHlsExtractorFactory())
+        prefs = ctx.getSharedPreferences("player", Context.MODE_PRIVATE)
         return ExoPlayer.Builder(ctx)
             .setMediaSourceFactory(DefaultMediaSourceFactory(ctx).setDataSourceFactory(data))
             .setLoadControl(load)
             .build()
-            .also { PlayerStats.attach(it) }
+            .also {
+                PlayerStats.attach(it)
+                applySubtitles(it)
+            }
+    }
+
+    private lateinit var prefs: SharedPreferences
+
+    /** 节目自带字幕开关（CEA-608 隐藏字幕、HLS 里的 WebVTT 等），默认开 */
+    val subtitlesOn: Boolean get() = prefs.getBoolean("subtitles", true)
+
+    fun setSubtitles(player: ExoPlayer, on: Boolean) {
+        prefs.edit().putBoolean("subtitles", on).apply()
+        applySubtitles(player)
+    }
+
+    private fun applySubtitles(player: ExoPlayer) {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitlesOn)
+            // 隐藏字幕通常不标语言，不放开的话播放器不会选它
+            .setSelectUndeterminedTextLanguage(true)
+            .setPreferredTextLanguages("zh", "en")
+            .build()
+    }
+
+    /** 当前节目带的字幕，没有返回 null；例如“CEA-608 隐藏字幕（英语）” */
+    fun subtitleInfo(player: ExoPlayer): String? {
+        val group = player.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_TEXT } ?: return null
+        val f = group.getTrackFormat(0)
+        val kind = when (f.sampleMimeType) {
+            MimeTypes.APPLICATION_CEA608, MimeTypes.APPLICATION_MP4CEA608 -> "CEA-608 隐藏字幕"
+            MimeTypes.APPLICATION_CEA708 -> "CEA-708 隐藏字幕"
+            MimeTypes.TEXT_VTT -> "WebVTT 字幕"
+            MimeTypes.APPLICATION_DVBSUBS -> "DVB 字幕"
+            else -> "字幕"
+        }
+        val lang = f.language?.takeIf { it != "und" }?.let { java.util.Locale(it).getDisplayLanguage(java.util.Locale.CHINESE) }
+        return kind + (lang?.let { "（$it）" } ?: "")
     }
 
     /** 把播放器错误翻译成看得懂的原因 */

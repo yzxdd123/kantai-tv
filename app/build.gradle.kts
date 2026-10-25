@@ -14,8 +14,8 @@ android {
         applicationId = "app.kantai.tv"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
     }
 
     // 发布签名：环境变量 KANTAI_KEYSTORE 指向 keystore.properties（不放进仓库）。

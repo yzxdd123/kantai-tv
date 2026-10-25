@@ -29,6 +29,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import app.kantai.tv.play.PlayerStats
+import app.kantai.tv.play.Players
 import kotlinx.coroutines.delay
 
 /** 播放统计：画质、编码、帧率、码率、网速、缓冲、丢帧 */
@@ -83,6 +84,7 @@ fun StatsOverlay(player: ExoPlayer, modifier: Modifier = Modifier) {
         add("缓冲" to "%.1f 秒".format(player.totalBufferedDuration / 1000f))
         add("丢帧" to "$dropped")
         add("解码器" to decoder.ifEmpty { "—" } + if (decoder.startsWith("c2.android") || decoder.startsWith("OMX.google")) "（软件解码）" else "")
+        add("字幕" to (Players.subtitleInfo(player)?.let { "$it · ${if (Players.subtitlesOn) "开" else "关"}" } ?: "无"))
         add("音频" to (a?.let { "${codecName(it.sampleMimeType)} · ${it.channelCount} 声道 · ${it.sampleRate / 1000.0} kHz" } ?: "—"))
     }
 

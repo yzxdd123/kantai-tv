@@ -5,11 +5,13 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
+class HttpStatusException(val code: Int) : IOException("HTTP $code")
+
 object Http {
     const val UA = "okhttp/4.9.3"
 
     /** 手动跟随跳转（含 http↔https），返回连接和最终地址 */
-    fun connect(url: String, timeoutMs: Int = 15_000): Pair<HttpURLConnection, String> {
+    fun connect(url: String, timeoutMs: Int = 15_000, headers: Map<String, String> = emptyMap()): Pair<HttpURLConnection, String> {
         var u = url
         repeat(8) {
             val c = URL(u).openConnection() as HttpURLConnection
@@ -17,6 +19,7 @@ object Http {
             c.connectTimeout = timeoutMs
             c.readTimeout = timeoutMs
             c.setRequestProperty("User-Agent", UA)
+            headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
             val code = c.responseCode
             when {
                 code in 300..399 -> {
@@ -26,7 +29,7 @@ object Http {
                 }
                 code >= 400 -> {
                     c.disconnect()
-                    throw IOException("HTTP $code")
+                    throw HttpStatusException(code)
                 }
                 else -> return c to u
             }

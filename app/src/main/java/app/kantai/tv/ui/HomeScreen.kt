@@ -66,6 +66,8 @@ import app.kantai.tv.data.AppRepo
 import app.kantai.tv.data.Channel
 import app.kantai.tv.data.Epg
 import app.kantai.tv.data.Programme
+import app.kantai.tv.data.ProbeStore
+import app.kantai.tv.data.Prober
 import app.kantai.tv.play.Catchup
 import app.kantai.tv.play.Players
 import coil.compose.AsyncImage
@@ -129,6 +131,7 @@ fun HomeScreen(
     onPlay: (Channel, Programme?) -> Unit,
     onSettings: () -> Unit,
 ) {
+    val ctx = LocalContext.current
     val epg by AppRepo.epg.collectAsState()
     val status by AppRepo.status.collectAsState()
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -141,9 +144,16 @@ fun HomeScreen(
 
     val groups = remember(channels) { listOf(HomeState.ALL) + channels.map { it.group.ifBlank { "未分组" } }.distinct() }
     if (state.group !in groups) state.group = HomeState.ALL
-    val inGroup = remember(channels, state.group) {
+    val probes by ProbeStore.results.collectAsState()
+    val probeProgress by ProbeStore.progress.collectAsState()
+    val bySpeed by ProbeStore.sortBySpeed.collectAsState()
+    // 测速进行中不重新排序，免得频道在眼前跳来跳去；测完再按新结果排
+    var sortSnapshot by remember { mutableStateOf(probes) }
+    LaunchedEffect(probeProgress == null, probes) { if (probeProgress == null) sortSnapshot = probes }
+    val groupChannels = remember(channels, state.group) {
         if (state.group == HomeState.ALL) channels else channels.filter { it.group.ifBlank { "未分组" } == state.group }
     }
+    val inGroup = remember(groupChannels, bySpeed, sortSnapshot) { ProbeStore.sort(groupChannels, bySpeed, sortSnapshot) }
     val row = inGroup.indexOfFirst { it.key == state.focusedKey }.coerceAtLeast(0)
     val current = inGroup.getOrNull(row)
     val selected = current?.let { Guide.at(Guide.cells(it, epg, now), state.anchor) }
@@ -164,7 +174,7 @@ fun HomeScreen(
     // 选中的分组可能滚出了屏幕（还没被创建），要先滚过去再给焦点
     fun focusGroups() {
         scope.launch {
-            val i = groups.indexOf(state.group) + 1 // 第 0 项是“管理直播源”
+            val i = groups.indexOf(state.group) + GROUP_HEADER_ITEMS
             val visible = groupList.layoutInfo.visibleItemsInfo.map { it.index }
             if (i !in visible) groupList.scrollToItem((i - 3).coerceAtLeast(0))
             withFrameNanos { }
@@ -188,7 +198,7 @@ fun HomeScreen(
                 else "这个时段咪咕在播 ${games.size} 场，本台是其中之一：" + games.take(5).joinToString("、") +
                     (if (games.size > 5) " 等" else "")
             } else null
-            InfoPanel(current, selected, now, status, note, Modifier.weight(1f).fillMaxHeight())
+            InfoPanel(current, selected, now, status, note, current?.let { probes[it.url] }, Modifier.weight(1f).fillMaxHeight())
             Box(
                 Modifier.fillMaxHeight().aspectRatio(16f / 9f).clip(RoundedCornerShape(10.dp)).background(Color.Black),
             ) {
@@ -197,6 +207,7 @@ fun HomeScreen(
                         PlayerView(c).apply {
                             useController = false
                             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            subtitleView?.visibility = android.view.View.GONE // 预览窗太小，不显示字幕
                             setShutterBackgroundColor(android.graphics.Color.BLACK)
                             this.player = player
                         }
@@ -213,6 +224,10 @@ fun HomeScreen(
         Row(Modifier.fillMaxSize()) {
             GroupColumn(
                 groups, state, onSettings,
+                probeProgress = probeProgress,
+                bySpeed = bySpeed,
+                onProbe = { ProbeStore.toggle(channels) },
+                onToggleSort = { ProbeStore.setSortBySpeed(!bySpeed) },
                 focus = groupFocus,
                 listState = groupList,
                 onEnter = { runCatching { gridFocus.requestFocus() } },
@@ -222,12 +237,18 @@ fun HomeScreen(
             GuideGrid(
                 channels = inGroup,
                 allChannels = channels,
+                probes = probes,
                 epg = epg,
                 now = now,
                 state = state,
                 row = row,
                 focus = gridFocus,
                 onExitLeft = ::focusGroups,
+                onProbeGroup = {
+                    val running = ProbeStore.isRunning()
+                    ProbeStore.toggle(groupChannels)
+                    Toast.makeText(ctx, if (running) "已停止测速" else "正在测速「${state.group}」${groupChannels.size} 个频道，再按菜单键停止", Toast.LENGTH_SHORT).show()
+                },
                 onPlay = onPlay,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
             )
@@ -274,7 +295,7 @@ private fun PreviewStatus(player: ExoPlayer, channelKey: String?) {
 }
 
 @Composable
-private fun InfoPanel(ch: Channel?, p: Programme?, now: Long, status: String, note: String?, modifier: Modifier) {
+private fun InfoPanel(ch: Channel?, p: Programme?, now: Long, status: String, note: String?, probe: Prober.Result?, modifier: Modifier) {
     Column(modifier.padding(top = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (ch != null) {
@@ -323,28 +344,71 @@ private fun InfoPanel(ch: Channel?, p: Programme?, now: Long, status: String, no
                 Spacer(Modifier.height(10.dp))
                 Text(note, color = Palette.muted, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 3)
             }
+            probe?.let { ProbeLine(it, now) }
             Spacer(Modifier.weight(1f))
             Text(
                 when {
                     live -> "确认 全屏观看"
                     canCatchup -> "确认 回看这个节目"
-                    else -> "←→ 选择节目   ↑↓ 换频道"
+                    else -> "←→ 选择节目   ↑↓ 换频道   菜单 测速本分组"
                 },
                 color = Palette.muted,
                 fontSize = 13.sp,
             )
         } else {
+            probe?.let { ProbeLine(it, now) }
             Spacer(Modifier.weight(1f))
             Text(status, color = Palette.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
 
+/** 测速结果的详细说明 */
+@Composable
+private fun ProbeLine(r: Prober.Result, now: Long) {
+    val ago = ((now - r.testedAt) / 60_000).let { if (it < 1) "刚刚" else if (it < 60) "$it 分钟前" else "${it / 60} 小时前" }
+    val text = when (r.state) {
+        Prober.State.FAIL -> "打不开：${r.reason}"
+        else -> buildString {
+            r.ttfbMs?.let { append("响应 %.1f 秒".format(it / 1000.0)) }
+            r.speedMbps?.let { append(" · 下载 %.1f Mbps".format(it)) }
+            r.needMbps?.let { append("（需要 %.1f）".format(it)) }
+            r.height?.let { append(" · ${it}p") }
+            if (r.state == Prober.State.SLOW) append(" · 可能卡顿")
+            if (r.reason.isNotEmpty()) append(" · ${r.reason}")
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        ProbeBadge(r)
+        Spacer(Modifier.width(8.dp))
+        Text("测速（$ago）：$text", color = Palette.muted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** 频道格里的小标签：绿色是响应时间，黄色“慢”，红色“✕”打不开 */
+@Composable
+private fun ProbeBadge(r: Prober.Result) {
+    val (text, color) = when (r.state) {
+        Prober.State.GOOD -> (r.ttfbMs?.let { "%.1fs".format(it / 1000.0) } ?: "OK") to Palette.good
+        Prober.State.SLOW -> "慢" to Palette.warn
+        Prober.State.FAIL -> "✕" to Palette.live
+    }
+    Text(text, color = color, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+}
+
+/** 分组列表开头的固定项：管理直播源、测速、排序 */
+private const val GROUP_HEADER_ITEMS = 3
+
 @Composable
 private fun GroupColumn(
     groups: List<String>,
     state: HomeState,
     onSettings: () -> Unit,
+    probeProgress: ProbeStore.Progress?,
+    bySpeed: Boolean,
+    onProbe: () -> Unit,
+    onToggleSort: () -> Unit,
     focus: FocusRequester,
     listState: LazyListState,
     onEnter: () -> Unit,
@@ -373,6 +437,31 @@ private fun GroupColumn(
         item {
             TvItem(onClick = onSettings, compact = true) { Text("⚙ 管理直播源", color = Palette.muted, fontSize = 14.sp) }
         }
+        item {
+            TvItem(onClick = onProbe, compact = true) {
+                Text(
+                    probeProgress?.let { "⏹ 测速中 ${it.done}/${it.total}" } ?: "⚡ 测速全部频道",
+                    color = if (probeProgress != null) Palette.warn else Palette.muted,
+                    fontSize = 14.sp,
+                )
+            }
+        }
+        item {
+            // 显示的是当前在用的排序；选中时提示按确认会切换成什么
+            TvItem(onClick = onToggleSort, compact = true) { focused ->
+                Text(
+                    when {
+                        focused -> if (bySpeed) "确认：改回列表" else "确认：改按测速"
+                        bySpeed -> "↕ 当前：按测速"
+                        else -> "↕ 当前：列表顺序"
+                    },
+                    color = if (focused) Palette.text else Palette.muted,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         items(groups) { g ->
             TvItem(
                 modifier = if (g == state.group) Modifier.focusRequester(focus) else Modifier,
@@ -391,12 +480,14 @@ private fun GroupColumn(
 private fun GuideGrid(
     channels: List<Channel>,
     allChannels: List<Channel>,
+    probes: Map<String, Prober.Result>,
     epg: Epg,
     now: Long,
     state: HomeState,
     row: Int,
     focus: FocusRequester,
     onExitLeft: () -> Unit,
+    onProbeGroup: () -> Unit,
     onPlay: (Channel, Programme?) -> Unit,
     modifier: Modifier,
 ) {
@@ -468,6 +559,11 @@ private fun GuideGrid(
                         open()
                         true
                     }
+                    // 菜单键：测速当前分组（再按一次停止）
+                    Key.Menu -> {
+                        onProbeGroup()
+                        true
+                    }
                     Key.Back -> {
                         // 返回：先回到“现在”，已在现在就跳到左边分组
                         val atNow = !state.onChannelCell && cur != null && now >= cur.start && now < cur.stop
@@ -495,6 +591,7 @@ private fun GuideGrid(
                     GuideRow(
                         ch = ch,
                         number = allChannels.indexOf(ch) + 1,
+                        probe = probes[ch.url],
                         cells = Guide.cells(ch, epg, now),
                         now = now,
                         state = state,
@@ -539,6 +636,7 @@ private fun NowLine(windowStart: Long, now: Long, gridWidth: Dp) {
 private fun GuideRow(
     ch: Channel,
     number: Int,
+    probe: Prober.Result?,
     cells: List<Programme>,
     now: Long,
     state: HomeState,
@@ -576,6 +674,7 @@ private fun GuideRow(
             Spacer(Modifier.width(8.dp))
             Text(ch.name, color = Palette.text, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (canCatchup) Text("⟲", color = Palette.accent, fontSize = 13.sp)
+            probe?.let { Spacer(Modifier.width(4.dp)); ProbeBadge(it) }
         }
 
         // 节目格

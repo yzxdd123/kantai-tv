@@ -45,6 +45,8 @@ object Palette {
     val muted = Color(0xFF8B949E)
     val accent = Color(0xFF4C8DFF)
     val live = Color(0xFFFF6B6B)
+    val good = Color(0xFF3FB950)
+    val warn = Color(0xFFD29922)
 }
 
 /** 电视遥控器可聚焦的行：聚焦时高亮；onClick 为空时仍可聚焦，方便滚动查看 */

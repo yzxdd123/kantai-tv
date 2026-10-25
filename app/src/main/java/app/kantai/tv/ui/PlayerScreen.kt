@@ -218,7 +218,9 @@ fun PlayerScreen(
                         if (prog != null) { if (player.isPlaying) player.pause() else player.play(); osd() }
                         true
                     }
-                    Key.Menu, Key.Info -> { showStats = !showStats; true }
+                    Key.Menu -> { showStats = !showStats; true }
+                    // 节目自带字幕开关：屏显键（Sony 遥控器上发的是 INFO），也可以按数字 0 或字幕键
+                    Key.Info, Key.Zero, Key.NumPad0, Key.Captions -> { Players.setSubtitles(player, !Players.subtitlesOn); osd(); true }
                     else -> false
                 }
             },
@@ -282,6 +284,9 @@ private fun Osd(ch: Channel, prog: app.kantai.tv.data.Programme?, player: ExoPla
                 Text(clock(now), color = Color.White, fontSize = 20.sp)
             }
             Text(prog?.title ?: liveTitle ?: "", color = Palette.muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Players.subtitleInfo(player)?.let {
+                Text("字幕：$it · ${if (Players.subtitlesOn) "开" else "关"}（按屏显键切换）", color = Palette.muted, fontSize = 14.sp)
+            }
             if (prog != null) {
                 val pos = player.currentPosition
                 val dur = player.duration.takeIf { it > 0 } ?: (prog.stop - prog.start)
@@ -291,10 +296,10 @@ private fun Osd(ch: Channel, prog: app.kantai.tv.data.Programme?, player: ExoPla
                 Row {
                     Text("${clock(prog.start + pos)}  (${fmt(pos)} / ${fmt(dur)})", color = Color.White, fontSize = 14.sp)
                     Spacer(Modifier.weight(1f))
-                    Text("←→ 快退/快进 30 秒   ↑↓ 5 分钟   确认 暂停   菜单/长按确认 统计信息", color = Palette.muted, fontSize = 14.sp)
+                    Text("←→ 快退/快进 30 秒   ↑↓ 5 分钟   确认 暂停   屏显 字幕   菜单 统计信息", color = Palette.muted, fontSize = 14.sp)
                 }
             } else {
-                Text("↑↓ 换台   确认 频道列表   菜单/长按确认 统计信息   返回 退出", color = Palette.muted, fontSize = 14.sp)
+                Text("↑↓ 换台   确认 频道列表   屏显 字幕   菜单 统计信息   返回 退出", color = Palette.muted, fontSize = 14.sp)
             }
         }
     }

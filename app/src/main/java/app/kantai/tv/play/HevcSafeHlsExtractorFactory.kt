@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.SparseArray
 import androidx.annotation.OptIn
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.ParsableByteArray
 import androidx.media3.common.util.TimestampAdjuster
 import androidx.media3.common.util.UnstableApi
@@ -57,7 +58,8 @@ class HevcSafeHlsExtractorFactory : HlsExtractorFactory {
             val base = DefaultTsPayloadReaderFactory(
                 DefaultTsPayloadReaderFactory.FLAG_IGNORE_SPLICE_INFO_STREAM or
                     (if (muxedCaptionFormats != null) DefaultTsPayloadReaderFactory.FLAG_OVERRIDE_CAPTION_DESCRIPTORS else 0),
-                muxedCaptionFormats ?: emptyList(),
+                // 列表没声明时按 Media3 默认假设视频里可能有 CEA-608 隐藏字幕（不少美国频道都带）
+                muxedCaptionFormats ?: listOf(Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_CEA608).build()),
             )
             return object : TsPayloadReader.Factory {
                 override fun createInitialPayloadReaders(): SparseArray<TsPayloadReader> = base.createInitialPayloadReaders()
