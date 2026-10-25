@@ -58,8 +58,31 @@ object Players {
         }
     }
 
+    /**
+     * 重试也没用的错误：地址失效（4xx，超时和限流除外）、返回的不是视频、电视不支持的格式。
+     * 网络中断、超时、服务器 5xx 之类值得重连。
+     */
+    fun isRetryable(e: PlaybackException): Boolean {
+        val http = generateSequence(e.cause) { it.cause }.filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()
+        if (http != null) return http.responseCode >= 500 || http.responseCode == 408 || http.responseCode == 429
+        return e.errorCode !in setOf(
+            PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+        )
+    }
+
+    /** 当前在播的频道（直播或回看），节目单预览据此判断要不要换台 */
+    @Volatile var playingKey: String? = null
+        private set
+
     /** 同一个地址正在播就不重新加载，让预览窗切到全屏时不断流 */
-    fun play(player: ExoPlayer, url: String, force: Boolean = false) {
+    fun play(player: ExoPlayer, url: String, key: String? = null, force: Boolean = false) {
+        playingKey = key
         val current = player.currentMediaItem?.localConfiguration?.uri?.toString()
         if (!force && current == url && player.playbackState != Player.STATE_IDLE && player.playerError == null) {
             player.playWhenReady = true

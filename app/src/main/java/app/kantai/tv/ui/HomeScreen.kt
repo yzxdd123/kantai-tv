@@ -148,11 +148,12 @@ fun HomeScreen(
     val current = inGroup.getOrNull(row)
     val selected = current?.let { Guide.at(Guide.cells(it, epg, now), state.anchor) }
 
-    // 选中频道停留一下就在预览窗里播放
+    // 选中频道停留一下就在预览窗里播放；这个频道已经在播（包括刚看的回看）就不打断
     LaunchedEffect(current?.key) {
         current ?: return@LaunchedEffect
+        if (Players.playingKey == current.key && player.playerError == null) return@LaunchedEffect
         delay(700)
-        Players.play(player, current.url)
+        Players.play(player, current.url, current.key)
     }
 
     val gridFocus = remember { FocusRequester() }
@@ -238,7 +239,7 @@ fun HomeScreen(
 @Composable
 private fun PreviewStatus(player: ExoPlayer, channelKey: String?) {
     var error by remember { mutableStateOf<String?>(null) }
-    var buffering by remember { mutableStateOf(false) }
+    var buffering by remember { mutableStateOf(player.playbackState == Player.STATE_BUFFERING) }
     LaunchedEffect(channelKey) { error = null }
     DisposableEffect(player) {
         error = player.playerError?.let { Players.describe(it) }

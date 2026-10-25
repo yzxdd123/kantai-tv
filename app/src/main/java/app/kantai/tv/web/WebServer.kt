@@ -50,7 +50,7 @@ class WebServer(private val ctx: Context) : NanoHTTPD(PORT) {
             "/api/sources/add" -> body(s).let { AppRepo.addSource(it.optString("name"), it.optString("url"), it.optString("epgUrl")); ok() }
             "/api/sources/update" -> body(s).let { AppRepo.updateSource(it.getString("id"), it.optString("name"), it.optString("url"), it.optString("epgUrl")); ok() }
             "/api/sources/delete" -> body(s).let { AppRepo.deleteSource(it.getString("id")); ok() }
-            "/api/refresh" -> { AppRepo.refreshAsync(); ok() }
+            "/api/refresh" -> { AppRepo.refreshAsync(force = true); ok() }
             "/api/play" -> body(s).let {
                 val url = it.optString("url").trim()
                 require(url.contains("://")) { "地址要以 http:// 或 https:// 开头" }

@@ -76,7 +76,7 @@ fun SettingsScreen(onBack: (() -> Unit)?) {
                 fontSize = 15.sp,
             )
             Spacer(Modifier.size(12.dp))
-            TvItem(Modifier.focusRequester(first), onClick = { AppRepo.refreshAsync() }) {
+            TvItem(Modifier.focusRequester(first), onClick = { AppRepo.refreshAsync(force = true) }) {
                 Text("⟳ 立即刷新全部", color = Palette.text, fontSize = 17.sp)
             }
             if (onBack != null) {

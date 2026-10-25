@@ -56,6 +56,9 @@ import app.kantai.tv.play.Catchup
 import app.kantai.tv.play.Players
 import kotlinx.coroutines.delay
 
+/** 自动重连的等待时间，依次拉长 */
+private val RETRY_DELAYS = listOf(2_000L, 5_000L, 10_000L)
+
 @Composable
 fun PlayerScreen(
     player: ExoPlayer,
@@ -69,11 +72,15 @@ fun PlayerScreen(
     val epg by AppRepo.epg.collectAsState()
 
     var error by remember { mutableStateOf<String?>(null) }
-    var buffering by remember { mutableStateOf(true) }
+    // 从预览进全屏时播放器可能早已在播，不会再触发状态变化，所以先读当前状态
+    var buffering by remember { mutableStateOf(player.playbackState == Player.STATE_BUFFERING) }
     var showList by remember { mutableStateOf(false) }
     var osdUntil by remember { mutableLongStateOf(0L) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    var attempt by remember(req) { mutableIntStateOf(0) }
+    /** 每加一就重新加载一次；failures 是连续失败次数，稳定播放后清零 */
+    var reload by remember(req) { mutableIntStateOf(0) }
+    var failures by remember(req) { mutableIntStateOf(0) }
+    var retryable by remember(req) { mutableStateOf(true) }
     var resumeAt by remember(req) { mutableLongStateOf(0L) }
     var showStats by remember { mutableStateOf(false) }
     var okLongPressed by remember { mutableStateOf(false) }
@@ -82,16 +89,18 @@ fun PlayerScreen(
 
     fun osd() { osdUntil = System.currentTimeMillis() + 4_000 }
 
-    LaunchedEffect(req, attempt) {
+    LaunchedEffect(req, reload) {
         error = null
         val url = if (prog != null) Catchup.buildUrl(ch, prog.start, prog.stop) else ch.url
         if (url == null) {
             error = "这个频道不支持回看"
+            retryable = false
             return@LaunchedEffect
         }
-        Players.play(player, url, force = attempt > 0)
+        Players.play(player, url, ch.key, force = reload > 0)
         // 回看重试时从出错的位置接着放，而不是从头开始
-        if (attempt > 0 && prog != null && resumeAt > 0) player.seekTo(resumeAt)
+        if (reload > 0 && prog != null && resumeAt > 0) player.seekTo(resumeAt)
+        buffering = player.playbackState == Player.STATE_BUFFERING
         osd()
     }
 
@@ -102,7 +111,14 @@ fun PlayerScreen(
             }
 
             override fun onPlayerError(e: PlaybackException) {
+                // 直播进度落后太多：直接跳回直播点，不算失败
+                if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    player.seekToDefaultPosition()
+                    player.prepare()
+                    return
+                }
                 resumeAt = player.currentPosition
+                retryable = Players.isRetryable(e)
                 error = "无法播放：${Players.describe(e)}"
             }
         }
@@ -110,11 +126,20 @@ fun PlayerScreen(
         onDispose { player.removeListener(l) }
     }
 
-    // 出错自动重连几次（回看会从出错位置接着放）
+    // 出错自动重连：间隔逐次拉长；地址失效、格式不支持这类重试也没用的错误不重连
     LaunchedEffect(error) {
-        if (error != null && attempt < 3) {
-            delay(3_000)
-            attempt++
+        if (error != null && retryable && failures < RETRY_DELAYS.size) {
+            delay(RETRY_DELAYS[failures])
+            failures++
+            reload++
+        }
+    }
+
+    // 稳定播放 30 秒后清零失败次数，之后再出问题仍有完整的自动重连机会
+    LaunchedEffect(buffering, error, failures) {
+        if (failures > 0 && error == null && !buffering) {
+            delay(30_000)
+            if (player.playbackState == Player.STATE_READY) failures = 0
         }
     }
 
@@ -175,7 +200,7 @@ fun PlayerScreen(
                     okDown = false
                     if (okLongPressed) okLongPressed = false
                     else when {
-                        error != null -> attempt++
+                        error != null -> { failures = 0; reload++ }
                         prog != null -> { if (player.isPlaying) player.pause() else player.play(); osd() }
                         else -> showList = true
                     }
@@ -215,7 +240,10 @@ fun PlayerScreen(
         if (now < osdUntil || paused) Osd(ch, prog, player, epg.nowPlaying(ch, now)?.title, now, paused)
 
         when {
-            error != null -> Centered("$error\n按确认键重试，返回键退出")
+            error != null -> Centered(
+                error + "\n" + if (retryable && failures < RETRY_DELAYS.size) "正在重连 ${failures + 1}/${RETRY_DELAYS.size}…"
+                else "按确认键重试，返回键退出",
+            )
             buffering -> Centered("缓冲中…")
         }
 

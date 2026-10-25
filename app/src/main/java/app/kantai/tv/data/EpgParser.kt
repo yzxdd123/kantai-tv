@@ -38,6 +38,7 @@ object EpgParser {
         var pStart = 0L
         var pStop = 0L
         var pTitle = ""
+        var skipped = 0
 
         var ev = p.eventType
         while (ev != XmlPullParser.END_DOCUMENT) {
@@ -56,10 +57,17 @@ object EpgParser {
                     }
                     "programme" -> {
                         val id = p.getAttributeValue(null, "channel")
-                        pStart = time(p.getAttributeValue(null, "start"))
-                        pStop = time(p.getAttributeValue(null, "stop"))
+                        val s = time(p.getAttributeValue(null, "start"))
+                        val e = time(p.getAttributeValue(null, "stop"))
                         pTitle = ""
-                        pChannel = if (id != null && (id in wantedIds || id in keys) && pStop > from && pStart < to) id else null
+                        pChannel = null
+                        // 时间写错的节目跳过并计数，不影响其他节目
+                        if (s == null || e == null || e <= s) skipped++
+                        else {
+                            pStart = s
+                            pStop = e
+                            if (id != null && (id in wantedIds || id in keys) && pStop > from && pStart < to) pChannel = id
+                        }
                     }
                     "title" -> if (pChannel != null && pTitle.isEmpty()) pTitle = p.nextText().trim()
                 }
@@ -75,7 +83,7 @@ object EpgParser {
             ev = p.next()
         }
         progs.values.forEach { list -> list.sortBy { it.start } }
-        return Epg(progs, alias, progs.filterValues { isMergedList(it) }.keys)
+        return Epg(progs, alias, progs.filterValues { isMergedList(it) }.keys, skipped)
     }
 
     /**
@@ -94,12 +102,14 @@ object EpgParser {
         return overlaps > sorted.size / 5
     }
 
-    /** "20261024190000 +0800"；没写时区时按北京时间 */
-    private fun time(s: String?): Long {
-        if (s == null || s.length < 14) return 0
-        val ldt = LocalDateTime.parse(s.substring(0, 14), fmt)
-        val off = s.substring(14).trim()
-        val zone = if (off.length >= 5) ZoneOffset.of(off.substring(0, 3) + ":" + off.substring(3, 5)) else ZoneOffset.ofHours(8)
-        return ldt.toInstant(zone).toEpochMilli()
+    /** "20261024190000 +0800"；没写时区时按北京时间；格式不对返回 null */
+    private fun time(s: String?): Long? {
+        if (s == null || s.length < 14) return null
+        return runCatching {
+            val ldt = LocalDateTime.parse(s.substring(0, 14), fmt)
+            val off = s.substring(14).trim()
+            val zone = if (off.length >= 5) ZoneOffset.of(off.substring(0, 3) + ":" + off.substring(3, 5)) else ZoneOffset.ofHours(8)
+            ldt.toInstant(zone).toEpochMilli()
+        }.getOrNull()
     }
 }

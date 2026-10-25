@@ -41,8 +41,9 @@ object AppRepo {
         }
     }
 
-    fun refreshAsync() {
-        scope.launch { refresh(network = true) }
+    /** force：手动“立即刷新”，节目单也不看缓存有效期，重新下载 */
+    fun refreshAsync(force: Boolean = false) {
+        scope.launch { refresh(network = true, force = force) }
     }
 
     fun addSource(name: String, url: String, epgUrl: String) {
@@ -74,7 +75,7 @@ object AppRepo {
         playRequests.tryEmit(Channel("push", 0, name.ifBlank { "手机推送" }, url.trim(), "推送"))
     }
 
-    private suspend fun refresh(network: Boolean) = mutex.withLock {
+    private suspend fun refresh(network: Boolean, force: Boolean = false) = mutex.withLock {
         loading.value = true
         try {
             val all = mutableListOf<Channel>()
@@ -83,36 +84,66 @@ object AppRepo {
 
             for (s in sources.value) {
                 val cache = File(dir, "pl_${s.id}.txt")
-                val text = if (network) {
+                val cached = { cache.takeIf { it.exists() }?.readText()?.let { M3uParser.parse(s.id, it) } }
+                // 先解析新下载的内容，确认真的是直播列表再替换缓存；否则继续用上次的
+                val r = if (network) {
                     try {
-                        Http.text(s.url).first.also { cache.writeText(it) }
+                        val text = Http.text(s.url).first
+                        val fresh = M3uParser.parse(s.id, text)
+                        if (fresh.channels.isEmpty()) {
+                            errors += "${s.name}：下载到的内容里没有频道" + if (cache.exists()) "，继续用上次的列表" else ""
+                            cached()
+                        } else {
+                            cache.writeText(text)
+                            fresh
+                        }
                     } catch (e: Exception) {
-                        errors += "${s.name}：${e.message}"
-                        cache.takeIf { it.exists() }?.readText()
+                        errors += "${s.name}：${e.message}" + if (cache.exists()) "，继续用上次的列表" else ""
+                        cached()
                     }
-                } else cache.takeIf { it.exists() }?.readText()
-                text ?: continue
-                val r = M3uParser.parse(s.id, text)
+                } else cached()
+                r ?: continue
                 all += r.channels
                 s.epgUrl.ifBlank { r.epgUrl }.takeIf { it.isNotBlank() }?.let(epgUrls::add)
             }
             channels.value = all
-            status.value = buildString {
-                append("共 ${all.size} 个频道")
-                if (errors.isNotEmpty()) append("；更新失败：").append(errors.joinToString("；"))
+            fun report() {
+                status.value = buildString {
+                    append("共 ${all.size} 个频道")
+                    if (errors.isNotEmpty()) append("；").append(errors.joinToString("；"))
+                }
             }
+            report()
 
             val keys = all.flatMap { it.epgKeys }.toSet()
             val now = System.currentTimeMillis()
             var merged = Epg.EMPTY
             for (u in epgUrls) {
                 val f = File(dir, "epg_${Integer.toHexString(u.hashCode())}.xml")
-                if (network && (!f.exists() || now - f.lastModified() > 3 * HOUR)) {
-                    runCatching { Http.download(u, f) }.onFailure { errors += "节目单：${it.message}" }
+                if (network && (force || !f.exists() || now - f.lastModified() > 3 * HOUR)) {
+                    // 下载到新文件，能解析才替换旧节目单
+                    val fresh = File(dir, f.name + ".new")
+                    try {
+                        Http.download(u, fresh)
+                        EpgParser.parse(fresh, keys, now - 8 * DAY, now + 2 * DAY)
+                        if (!fresh.renameTo(f)) throw java.io.IOException("保存失败")
+                    } catch (e: Exception) {
+                        fresh.delete()
+                        errors += "节目单更新失败（${e.message ?: e.javaClass.simpleName}）" + if (f.exists()) "，继续用上次的" else ""
+                    }
                 }
-                if (f.exists()) runCatching { EpgParser.parse(f, keys, now - 8 * DAY, now + 2 * DAY) }.onSuccess { merged += it }
+                if (f.exists()) {
+                    runCatching { EpgParser.parse(f, keys, now - 8 * DAY, now + 2 * DAY) }
+                        .onSuccess {
+                            merged += it
+                            if (it.programmes.isEmpty()) errors += "节目单里没有匹配到这些频道"
+                            if (it.skipped > 0) errors += "节目单有 ${it.skipped} 条时间格式错误，已跳过"
+                        }
+                        .onFailure { errors += "节目单无法解析（${it.message ?: it.javaClass.simpleName}）" }
+                }
             }
             if (merged.programmes.isNotEmpty() || epgUrls.isEmpty()) epg.value = merged
+            report()
         } finally {
             loading.value = false
         }

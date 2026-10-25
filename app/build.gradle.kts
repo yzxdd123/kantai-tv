@@ -14,11 +14,12 @@ android {
         applicationId = "app.kantai.tv"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
     }
 
-    // 发布签名：环境变量 KANTAI_KEYSTORE 指向 keystore.properties（不放进仓库）；没有时用调试签名
+    // 发布签名：环境变量 KANTAI_KEYSTORE 指向 keystore.properties（不放进仓库）。
+    // 没有时 release 包直接报错，避免打出调试签名的“正式包”（无法覆盖升级已安装的正式版）
     val releaseProps = System.getenv("KANTAI_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
         ?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
     signingConfigs {
@@ -33,7 +34,14 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
+        }
+    }
+    if (releaseProps == null) {
+        tasks.matching { it.name == "packageRelease" }.configureEach {
+            doFirst {
+                throw GradleException("缺少发布签名：请设置环境变量 KANTAI_KEYSTORE 指向 keystore.properties")
+            }
         }
     }
     compileOptions {

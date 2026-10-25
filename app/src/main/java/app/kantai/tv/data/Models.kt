@@ -36,6 +36,8 @@ class Epg(
     val alias: Map<String, String>,
     /** 节目大量重叠的 id：是多个频道合并的赛事列表，不是某个频道自己的节目单 */
     val merged: Set<String> = emptySet(),
+    /** 时间格式错误、被跳过的节目数 */
+    val skipped: Int = 0,
 ) {
     private fun resolve(ch: Channel): String? {
         for (k in ch.epgKeys) {
@@ -59,7 +61,7 @@ class Epg(
     fun nowPlaying(ch: Channel, now: Long): Programme? =
         forChannel(ch).firstOrNull { now >= it.start && now < it.stop }
 
-    operator fun plus(other: Epg) = Epg(programmes + other.programmes, alias + other.alias, merged + other.merged)
+    operator fun plus(other: Epg) = Epg(programmes + other.programmes, alias + other.alias, merged + other.merged, skipped + other.skipped)
 
     companion object {
         val EMPTY = Epg(emptyMap(), emptyMap())
